@@ -5,9 +5,8 @@ const required = [
   "CLOUDFLARE_ZONE_ID",
   "CLOUDFLARE_API_TOKEN",
   "DEPLOY_HOSTNAME",
-  "ACCESS_TEAM_DOMAIN",
-  "ACCESS_AUD",
-  "ALLOWED_EMAIL",
+  "AUTH_USERNAME",
+  "AUTH_PASSWORD_HASH",
 ] as const;
 export type Deployment = Record<(typeof required)[number], string>;
 
@@ -22,10 +21,17 @@ export function requireDeployment(
   }
   if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(result.DEPLOY_HOSTNAME))
     throw new Error("Invalid DEPLOY_HOSTNAME");
-  if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(result.ACCESS_TEAM_DOMAIN))
-    throw new Error("Invalid ACCESS_TEAM_DOMAIN");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(result.ALLOWED_EMAIL))
-    throw new Error("Invalid ALLOWED_EMAIL");
+  if (
+    result.AUTH_USERNAME.length > 128 ||
+    /[\u0000-\u001f]/.test(result.AUTH_USERNAME)
+  )
+    throw new Error("Invalid AUTH_USERNAME");
+  if (
+    !/^pbkdf2-sha256\$100000\$[a-f0-9]{64}\$[a-f0-9]{64}$/.test(
+      result.AUTH_PASSWORD_HASH,
+    )
+  )
+    throw new Error("Invalid AUTH_PASSWORD_HASH");
   for (const key of ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_ZONE_ID"] as const) {
     if (!/^[a-f0-9]{32}$/.test(result[key])) throw new Error(`Invalid ${key}`);
   }

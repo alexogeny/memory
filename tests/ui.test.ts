@@ -185,3 +185,20 @@ test("overview limits recent cards and category previews for a full collection",
     overview.categories.reduce((total, category) => total + category.count, 0),
   ).toBe(42);
 });
+
+import { sessionReducer } from "../src/session";
+test("session expiry removes owner identity before private views render", () => {
+  const authenticated = sessionReducer(
+    { phase: "checking", username: null },
+    { type: "signed-in", username: "owner" },
+  );
+  expect(authenticated).toEqual({ phase: "authenticated", username: "owner" });
+  expect(sessionReducer(authenticated, { type: "expired" })).toEqual({
+    phase: "anonymous",
+    username: null,
+  });
+  expect(sessionReducer(authenticated, { type: "signed-out" })).toEqual({
+    phase: "anonymous",
+    username: null,
+  });
+});

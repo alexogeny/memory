@@ -23,9 +23,7 @@ test("phone adds, corrects, reviews and retracts a memory", async ({
 }) => {
   await page.getByRole("button", { name: "New memory", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: /^Custom field/ })
-    .click();
+  await dialog.getByRole("button", { name: /^Custom field/ }).click();
   await dialog.getByLabel("Field name", { exact: true }).fill("Favourite book");
   await dialog.getByLabel("Value", { exact: true }).fill("The Hobbit");
   await dialog
@@ -56,7 +54,8 @@ test("phone adds, corrects, reviews and retracts a memory", async ({
   await page
     .getByRole("button", { name: "Retract Favourite book", exact: true })
     .click();
-  await dialog
+  await page
+    .getByRole("alertdialog")
     .getByRole("button", { name: "Retract memory", exact: true })
     .click();
   await expect(page.locator(".memory-card")).toHaveCount(0);
@@ -127,9 +126,7 @@ test("guided fields, phone layout and session recovery", async ({ page }) => {
   );
   await page.getByRole("button", { name: "New memory", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: /^Custom field/ })
-    .click();
+  await dialog.getByRole("button", { name: /^Custom field/ }).click();
   await dialog.getByRole("button", { name: "Browse fields" }).click();
   await dialog.getByLabel("Search available fields").fill("Hair");
   await dialog.getByRole("button", { name: "Hair", exact: true }).click();
@@ -150,7 +147,7 @@ test("guided fields, phone layout and session recovery", async ({ page }) => {
   );
   await search.fill("expired");
   await expect(
-    page.getByRole("button", { name: "Sign in again" }),
+    page.getByRole("button", { name: "Sign in", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".memory-card")).toHaveCount(0);
 });
@@ -158,18 +155,15 @@ test("guided fields, phone layout and session recovery", async ({ page }) => {
 test("exports are downloadable and cache excludes private requests", async ({
   page,
 }) => {
-  await page
-    .getByRole("button", { name: "Settings", exact: true })
-    .last()
-    .click();
-  const dialog = page.getByRole("dialog");
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("tabpanel");
   const downloaded = page.waitForEvent("download");
-  await dialog
+  await settings
     .getByRole("button", { name: "Export JSON", exact: true })
     .click();
   expect((await downloaded).suggestedFilename()).toMatch(/^memory-.*\.json$/);
   await expect(
-    dialog.getByRole("button", { name: "Export Markdown", exact: true }),
+    settings.getByRole("button", { name: "Export Markdown", exact: true }),
   ).toBeVisible();
   const keys = await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
@@ -226,7 +220,7 @@ test("a large collection opens as a compact overview on phone and desktop", asyn
   await expect(page.locator(".category-tile")).toHaveCount(6);
   await expect(page.locator(".recent-memory")).toHaveCount(4);
   await expect(page.locator(".memory-card")).toHaveCount(0);
-  await expect(page.locator(".collection-stats")).toContainText("42");
+  await expect(page.locator(".overview-glance")).toContainText("42");
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,

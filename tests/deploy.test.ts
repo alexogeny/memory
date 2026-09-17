@@ -11,16 +11,16 @@ const input = {
   CLOUDFLARE_ZONE_ID: "b".repeat(32),
   CLOUDFLARE_API_TOKEN: "test-credential",
   DEPLOY_HOSTNAME: "private.example.com",
-  ACCESS_TEAM_DOMAIN: "login.cloudflareaccess.com",
-  ACCESS_AUD: "audience",
-  ALLOWED_EMAIL: "owner@example.com",
+  AUTH_USERNAME: "owner",
+  AUTH_PASSWORD_HASH:
+    "pbkdf2-sha256$100000$" + "a".repeat(64) + "$" + "b".repeat(64),
 };
 
 describe("private deployment configuration", () => {
   test("missing authentication configuration prevents deployment", () => {
-    expect(() => requireDeployment({ ...input, ACCESS_AUD: "" })).toThrow(
-      "ACCESS_AUD",
-    );
+    expect(() =>
+      requireDeployment({ ...input, AUTH_PASSWORD_HASH: "" }),
+    ).toThrow("AUTH_PASSWORD_HASH");
     expect(() =>
       requireDeployment({
         ...input,
@@ -122,4 +122,22 @@ test("Locum conversion rejects missing revisions rather than silently losing his
       history: {},
     }),
   ).toThrow("incomplete");
+});
+
+import { passwordVerifier } from "../scripts/password";
+import { pbkdf2Sync } from "node:crypto";
+
+test("generated login verifiers use distinct salts and match the authentication contract", async () => {
+  const password = "Fictional-test-password-only-0123456789!";
+  const first = await passwordVerifier(password);
+  const second = await passwordVerifier(password);
+  expect(first).not.toBe(second);
+  expect(first).toMatch(/^pbkdf2-sha256\$100000\$[a-f0-9]{64}\$[a-f0-9]{64}$/);
+  const [, , salt, derived] = first.split("$");
+  expect(
+    Buffer.from(
+      pbkdf2Sync(password, Buffer.from(salt!, "hex"), 100000, 32, "sha256"),
+    ).toString("hex"),
+  ).toBe(derived!);
+  await expect(passwordVerifier("short")).rejects.toThrow("generated password");
 });

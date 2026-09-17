@@ -96,9 +96,8 @@ try {
   await writeFile(
     secretsPath,
     JSON.stringify({
-      ACCESS_TEAM_DOMAIN: config.ACCESS_TEAM_DOMAIN,
-      ACCESS_AUD: config.ACCESS_AUD,
-      ALLOWED_EMAIL: config.ALLOWED_EMAIL,
+      AUTH_USERNAME: config.AUTH_USERNAME,
+      AUTH_PASSWORD_HASH: config.AUTH_PASSWORD_HASH,
     }),
     { mode: 0o600 },
   );

@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { authenticate, login, logout, AuthFailure } from "./auth";
 
 interface Statement {
   bind(...values: unknown[]): Statement;
@@ -12,9 +12,8 @@ export interface Env {
     batch(statements: Statement[]): Promise<{ results: Data[] }[]>;
   };
   ASSETS: { fetch(request: Request): Promise<Response> };
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
-  ALLOWED_EMAIL?: string;
+  AUTH_USERNAME?: string;
+  AUTH_PASSWORD_HASH?: string;
   LOCAL_DEV?: string;
 }
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -42,8 +41,6 @@ const recordFields = [
 const kinds = ["person", "place", "animal", "organization"];
 const maxBody = 2_000_000;
 const maxRows = 1000;
-let jwksDomain = "";
-let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 class Failure extends Error {
   constructor(
     readonly status: number,
@@ -174,52 +171,14 @@ function insert(db: Env["DB"], record: Data) {
       ),
     );
 }
-async function authenticate(request: Request, env: Env) {
-  if (
-    env.LOCAL_DEV === "true" &&
-    ["localhost", "127.0.0.1", "[::1]"].includes(new URL(request.url).hostname)
-  )
-    return "local@localhost";
-  const domain = env.ACCESS_TEAM_DOMAIN;
-  if (
-    !domain ||
-    !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(domain) ||
-    !env.ACCESS_AUD ||
-    !env.ALLOWED_EMAIL
-  )
-    fail(503, "Access is not configured");
-  const token = request.headers.get("Cf-Access-Jwt-Assertion");
-  if (!token) fail(401, "Sign in to continue");
-  if (token.length > 16384) fail(401, "Invalid access token");
-  try {
-    if (!jwks || jwksDomain !== domain) {
-      jwksDomain = domain;
-      jwks = createRemoteJWKSet(
-        new URL(`https://${domain}/cdn-cgi/access/certs`),
-      );
-    }
-    const { payload } = await jwtVerify(token, jwks, {
-      issuer: `https://${domain}`,
-      audience: env.ACCESS_AUD,
-      algorithms: ["RS256"],
-      requiredClaims: ["exp", "iat", "email"],
-    });
-    if (payload.email !== env.ALLOWED_EMAIL)
-      fail(403, "Account is not allowed");
-    return env.ALLOWED_EMAIL;
-  } catch (error) {
-    if (error instanceof Failure) throw error;
-    fail(401, "Invalid access token");
-  }
-}
-async function body(request: Request) {
+async function body(request: Request, limit = maxBody) {
   if (
     request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !==
     "application/json"
   )
     fail(415, "Use application/json");
-  if (Number(request.headers.get("content-length")) > maxBody)
-    fail(413, "Request exceeds 2 MB");
+  if (Number(request.headers.get("content-length")) > limit)
+    fail(413, `Request exceeds ${limit} bytes`);
   const reader = request.body?.getReader();
   if (!reader) fail(400, "JSON body required");
   const parts: Uint8Array[] = [];
@@ -228,9 +187,9 @@ async function body(request: Request) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > maxBody) {
+    if (size > limit) {
       await reader.cancel();
-      fail(413, "Request exceeds 2 MB");
+      fail(413, `Request exceeds ${limit} bytes`);
     }
     parts.push(value);
   }
@@ -245,14 +204,14 @@ async function body(request: Request) {
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
     );
   } catch (error) {
-    if (error instanceof Failure) throw error;
+    if (error instanceof Failure || error instanceof AuthFailure) throw error;
     fail(400, "Invalid JSON");
   }
 }
 function response(value: unknown, status = 200) {
   return Response.json(value, { status });
 }
-async function api(request: Request, env: Env, email: string) {
+async function api(request: Request, env: Env, username: string) {
   const url = new URL(request.url),
     path = url.pathname,
     method = request.method,
@@ -260,7 +219,8 @@ async function api(request: Request, env: Env, email: string) {
   const input = ["POST", "PATCH", "DELETE"].includes(method)
     ? await body(request)
     : undefined;
-  if (path === "/api/session" && method === "GET") return response({ email });
+  if (path === "/api/auth/logout" && method === "POST") { exact(input!, []); return logout(request,env); }
+  if (path === "/api/session" && method === "GET") return response({ username });
   if (path === "/api/subjects" && method === "GET")
     return response({
       subjects: (await db.prepare("SELECT * FROM subjects ORDER BY id").all())
@@ -585,24 +545,23 @@ function secure(result: Response, apiRequest: boolean) {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url),
-      apiRequest = url.pathname.startsWith("/api/");
+      apiRequest = url.pathname === "/api" || url.pathname.startsWith("/api/");
     try {
-      const email = await authenticate(request, env);
+      if (!apiRequest) return secure(await env.ASSETS.fetch(request), false);
       if (
         ["POST", "PATCH", "DELETE", "PUT"].includes(request.method) &&
         request.headers.get("Origin") !== url.origin
       )
         fail(403, "Same-origin request required");
-      return secure(
-        apiRequest
-          ? await api(request, env, email)
-          : await env.ASSETS.fetch(request),
-        apiRequest,
-      );
+      if (url.pathname === "/api/auth/login" && request.method === "POST") {
+        return secure(await login(request, env, await body(request, 4096)), true);
+      }
+      const username = await authenticate(request, env);
+      return secure(await api(request,env,username),true);
     } catch (error) {
       let status = 500,
         message = "Request could not be completed";
-      if (error instanceof Failure) {
+      if (error instanceof Failure || error instanceof AuthFailure) {
         status = error.status;
         message = error.message;
       } else if (

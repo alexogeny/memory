@@ -78,40 +78,10 @@ beforeEach(async () => {
 });
 afterEach(() => sqlite.close());
 describe("private records API", () => {
-  test("fails closed without Access config, rejects invalid tokens and cross-origin writes", async () => {
-    expect(
-      (
-        await request("/api/session", "GET", undefined, {
-          LOCAL_DEV: undefined,
-        })
-      ).status,
-    ).toBe(503);
-    expect(
-      (
-        await request("/api/session", "GET", undefined, {
-          LOCAL_DEV: undefined,
-          ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
-          ACCESS_AUD: "aud",
-          ALLOWED_EMAIL: "me@example.com",
-        })
-      ).status,
-    ).toBe(401);
-    expect(
-      (
-        await request(
-          "/api/records",
-          "POST",
-          fact,
-          {},
-          { Origin: "https://evil.example" },
-        )
-      ).status,
-    ).toBe(403);
-    const response = await worker.fetch(
-      new Request("https://memory.example/api/session"),
-      env,
-    );
-    expect(response.status).toBe(503);
+  test("fails closed without password config and rejects cross-origin writes", async () => {
+    expect((await request('/api/session','GET',undefined,{LOCAL_DEV:undefined})).status).toBe(503);
+    expect((await request('/api/records','POST',fact,{}, {Origin:'https://evil.example'})).status).toBe(403);
+    expect((await worker.fetch(new Request('https://memory.example/api/session'),env)).status).toBe(503);
   });
   test("validates inputs and enforces unique active facts", async () => {
     expect(
@@ -233,26 +203,7 @@ describe("private records API", () => {
   });
 });
 
-test("rejects malformed tokens, non-JSON bodies and oversized values; protects assets", async () => {
-  const production = {
-    LOCAL_DEV: undefined,
-    ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
-    ACCESS_AUD: "aud",
-    ALLOWED_EMAIL: "me@example.com",
-  };
-  expect(
-    (
-      await request("/api/session", "GET", undefined, production, {
-        "Cf-Access-Jwt-Assertion": "not-a-jwt",
-      })
-    ).status,
-  ).toBe(401);
-  const asset = await worker.fetch(new Request("https://memory.example/"), {
-    ...env,
-    ...production,
-  });
-  expect(asset.status).toBe(401);
-  expect(asset.headers.get("Cache-Control")).toBe("no-store");
+test("rejects non-JSON bodies and oversized values", async () => {
   expect(
     (
       await request(
@@ -307,71 +258,6 @@ test("import rolls back new subjects when an existing record conflicts", async (
   expect((await request("/api/subjects")).body.subjects).toHaveLength(1);
   exported.history = [];
   expect((await request("/api/import", "POST", exported)).status).toBe(400);
-});
-
-test("verifies signature, issuer, audience, expiry and exact allowed email", async () => {
-  const { generateKeyPair, exportJWK, SignJWT } = await import("jose");
-  const { privateKey, publicKey } = await generateKeyPair("RS256");
-  const key = {
-    ...(await exportJWK(publicKey)),
-    kid: "test-key",
-    alg: "RS256",
-    use: "sig",
-  };
-  const production = {
-    LOCAL_DEV: undefined,
-    ACCESS_TEAM_DOMAIN: "jwt-test.cloudflareaccess.com",
-    ACCESS_AUD: "memory-audience",
-    ALLOWED_EMAIL: "me@example.com",
-  };
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: unknown) => {
-    expect(String(url)).toBe(
-      "https://jwt-test.cloudflareaccess.com/cdn-cgi/access/certs",
-    );
-    return Response.json({ keys: [key] });
-  }) as typeof fetch;
-  const sign = (overrides: Record<string, unknown> = {}) =>
-    new SignJWT({
-      email: "me@example.com",
-      iss: "https://jwt-test.cloudflareaccess.com",
-      aud: "memory-audience",
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 60,
-      ...overrides,
-    })
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-      .sign(privateKey);
-  try {
-    expect(
-      (
-        await request("/api/session", "GET", undefined, production, {
-          "Cf-Access-Jwt-Assertion": await sign(),
-        })
-      ).body.email,
-    ).toBe("me@example.com");
-    for (const overrides of [
-      { aud: "other" },
-      { iss: "https://other.cloudflareaccess.com" },
-      { exp: 1 },
-    ])
-      expect(
-        (
-          await request("/api/session", "GET", undefined, production, {
-            "Cf-Access-Jwt-Assertion": await sign(overrides),
-          })
-        ).status,
-      ).toBe(401);
-    expect(
-      (
-        await request("/api/session", "GET", undefined, production, {
-          "Cf-Access-Jwt-Assertion": await sign({ email: "Me@example.com" }),
-        })
-      ).status,
-    ).toBe(403);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
 });
 
 test("preserves structured source metadata through edits, history and import", async () => {

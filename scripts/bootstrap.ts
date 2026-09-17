@@ -17,17 +17,19 @@ for (const path of [settingsPath, tokenPath]) {
 }
 const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
   hostname: string;
-  allowedEmail: string;
+  username: string;
   repository: string;
 };
 if (
   !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(settings.hostname) ||
-  !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.allowedEmail) ||
+  !settings.username?.trim() ||
+  settings.username.length > 128 ||
+  /[\u0000-\u001f]/.test(settings.username) ||
   !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(settings.repository)
 )
   throw new Error("Invalid bootstrap settings");
 const token = (await readFile(tokenPath, "utf8")).trim();
-const privateValues = [token, settings.hostname, settings.allowedEmail];
+const privateValues = [token, settings.hostname, settings.username];
 const privateDirectory = dirname(resolve(settingsPath));
 
 async function api(path: string, method = "GET", body?: unknown): Promise<any> {
@@ -80,72 +82,25 @@ try {
   const zone = matching[0],
     account = zone.account.id;
   privateValues.push(account, zone.id);
-  let organization: Data;
-  try {
-    organization = await api(`/accounts/${account}/access/organizations`);
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes("not_enabled"))
-      throw error;
-    organization = await api(
-      `/accounts/${account}/access/organizations`,
-      "POST",
-      {
-        name: "Memory",
-        auth_domain: `memory-${crypto.randomUUID().slice(0, 12)}.cloudflareaccess.com`,
-      },
-    );
-  }
-  privateValues.push(organization.auth_domain);
-  const providers: Data[] = await api(
-    `/accounts/${account}/access/identity_providers`,
+  const auth = JSON.parse(
+    await readFile(resolve(privateDirectory, "auth-private.json"), "utf8"),
   );
-  const provider =
-    providers.find((item) => item.type === "onetimepin") ??
-    (await api(`/accounts/${account}/access/identity_providers`, "POST", {
-      name: "Email code",
-      type: "onetimepin",
-      config: {},
-    }));
-  const apps: Data[] = await api(`/accounts/${account}/access/apps`);
-  let app = apps.find((item) => item.domain === settings.hostname);
-  if (app) {
-    const policies: Data[] = await api(
-      `/accounts/${account}/access/apps/${app.id}/policies`,
-    );
-    if (
-      policies.length !== 1 ||
-      policies[0].decision !== "allow" ||
-      JSON.stringify(policies[0].include) !==
-        JSON.stringify([{ email: { email: settings.allowedEmail } }])
+  if (
+    auth.AUTH_USERNAME !== settings.username ||
+    !/^pbkdf2-sha256\$100000\$[a-f0-9]{64}\$[a-f0-9]{64}$/.test(
+      auth.AUTH_PASSWORD_HASH,
     )
-      throw new Error(
-        "Existing Access policy differs; review it before changing access",
-      );
-  } else
-    app = await api(`/accounts/${account}/access/apps`, "POST", {
-      name: "Memory",
-      domain: settings.hostname,
-      type: "self_hosted",
-      session_duration: "168h",
-      app_launcher_visible: false,
-      allowed_idps: [provider.id],
-      auto_redirect_to_identity: true,
-      policies: [
-        {
-          name: "Owner only",
-          decision: "allow",
-          include: [{ email: { email: settings.allowedEmail } }],
-        },
-      ],
-    });
-  if (!app?.aud) throw new Error("Access application has no audience");
+  )
+    throw new Error(
+      "Create matching private login settings before bootstrapping",
+    );
+  privateValues.push(auth.AUTH_PASSWORD_HASH);
   const configuration = {
     CLOUDFLARE_ACCOUNT_ID: account,
     CLOUDFLARE_ZONE_ID: zone.id,
     DEPLOY_HOSTNAME: settings.hostname,
-    ACCESS_TEAM_DOMAIN: organization.auth_domain,
-    ACCESS_AUD: app.aud,
-    ALLOWED_EMAIL: settings.allowedEmail,
+    AUTH_USERNAME: auth.AUTH_USERNAME,
+    AUTH_PASSWORD_HASH: auth.AUTH_PASSWORD_HASH,
   };
   await save("deployment.json", configuration);
   let deploymentToken: Data;
@@ -223,7 +178,7 @@ try {
       String(value),
     );
   console.log(
-    "Access, deployment credentials, and repository secrets are configured.",
+    "Deployment credentials, password login, and repository secrets are configured.",
   );
   console.log(
     "Push the checked application to main to create D1 and deploy through Actions.",

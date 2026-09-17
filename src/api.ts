@@ -29,11 +29,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       0,
     );
   });
-  if (response.status === 401 || response.status === 403 || response.redirected)
-    throw expiredSession();
   const body = (await response.json().catch(() => null)) as {
     error?: string;
   } | null;
+  if (
+    (response.status === 401 || response.redirected) &&
+    path !== "/api/auth/login"
+  )
+    throw expiredSession();
   if (!response.ok)
     throw new ApiError(
       body?.error || "Could not connect. Please try again.",

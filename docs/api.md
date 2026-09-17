@@ -1,6 +1,8 @@
 # Private memory API
 
-Every request, including static assets, requires a valid Cloudflare Access JWT. Configure `ACCESS_TEAM_DOMAIN` as the team hostname (`team.cloudflareaccess.com`), `ACCESS_AUD` as the application audience, and `ALLOWED_EMAIL` as the exact allowed email. The Worker verifies RS256 signatures against the team's HTTPS JWKS endpoint, issuer, audience, expiry, issued-at claim presence, and email. Missing configuration returns 503; missing or invalid tokens return 401; a different email returns 403. Local development bypass requires both `LOCAL_DEV=true` and a loopback URL hostname. Never deploy that variable.
+Static assets and the login screen are public. Every data API requires the `__Host-memory_session` cookie. Configure `AUTH_USERNAME` and `AUTH_PASSWORD_HASH` as Worker secrets. The verifier format is `pbkdf2-sha256$100000$<64 lowercase hex salt>$<64 lowercase hex key>`. Missing or invalid configuration returns 503; missing, expired, revoked, or invalid sessions return 401. Local development bypass requires both `LOCAL_DEV=true` and a loopback URL hostname. Never deploy that variable.
+
+Login accepts a username and password in a same-origin JSON request. The username is case-sensitive. Five attempts per IP and 50 globally are allowed in a 15-minute window; the counters live in D1 and excessive attempts return 429 before password derivation. Credentials are not retained in sessions. The cookie carries a random 256-bit token with Secure, HttpOnly, SameSite=Strict, Path=/, and a 30-day absolute lifetime. Only a SHA-256 token hash is stored in D1. Logout deletes that session; changing the username or verifier invalidates all previous sessions. Authentication tables are excluded from memory imports and exports.
 
 Responses use `Cache-Control: no-store`, a restrictive content security policy, frame protection, and no-referrer policy. The Worker does not log request bodies, records, or identity. POST, PATCH, and DELETE require an `Origin` matching the request URL and `Content-Type: application/json`. Failures return `{ "error": "human-readable message" }`. The frontend must clear its in-memory records on authentication failure.
 
@@ -18,7 +20,9 @@ Dates accept `YYYY-MM-DD` or UTC ISO datetime with optional three-digit millisec
 
 | Method and path                | Request                                          | Response                                            |
 | ------------------------------ | ------------------------------------------------ | --------------------------------------------------- |
-| GET `/api/session`             | —                                                | `{email}`                                           |
+| POST `/api/auth/login`         | `{username,password}`                            | `{username}` and session cookie                     |
+| POST `/api/auth/logout`        | `{}`                                             | `{ok:true}` and expired session cookie              |
+| GET `/api/session`             | —                                                | `{username}`                                        |
 | GET `/api/subjects`            | —                                                | `{subjects}`                                        |
 | POST `/api/subjects`           | `{name,kind}`                                    | 201 `{subject}`                                     |
 | GET `/api/records`             | Query described below                            | `{records,next_cursor}`                             |
@@ -45,4 +49,4 @@ For a newly imported record, use revision 1 and one `create` history entry conta
 
 ## Verification
 
-`bun test tests/api.test.ts` uses SQLite in memory with the actual D1 migration and a transactional D1 adapter. It checks real SQL uniqueness, revisions, history triggers, retraction, atomic import rollback, round-trip export/import, filters, pagination, validation, response privacy headers, asset authentication, and JWT signature/issuer/audience/expiry/email verification against a locally generated RSA key. The JWT test replaces only JWKS retrieval; signature verification uses jose. Live Cloudflare configuration and deployment need their own smoke test.
+`bun test tests/api.test.ts tests/auth.test.ts` uses SQLite in memory with the real D1 migrations and a transactional D1 adapter. It checks SQL uniqueness, revisions, history, retraction, import rollback, round-trip export/import, filters, pagination, validation, response privacy headers, password login, forged and expired cookies, logout, credential rotation, rate limits, and unchanged memory data across the auth migration. Browser tests exercise the mobile flows against local Wrangler. Live Cloudflare configuration and deployment require their own smoke test.
